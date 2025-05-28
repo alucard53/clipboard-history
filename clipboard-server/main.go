@@ -59,7 +59,7 @@ func (s *Server) copy(
 
 func(s *Server) clipboardListener() {
 	for {
-		defer time.Sleep(1 * time.Second)
+		time.Sleep(1 * time.Second)
 		content, err := getCurrentClipboardContent()
 
 		if err != nil {
