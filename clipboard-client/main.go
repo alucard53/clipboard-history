@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
-        "github.com/AllenDang/giu"
+	"github.com/AllenDang/giu"
 	"encoding/json"
 )
 
@@ -32,11 +32,10 @@ func(c *Client) loop() {
 		))
 	}
 
-
-        giu.SingleWindow().Layout(
-                giu.Label("Clipboard History"),
-                rows,
-        )
+	giu.SingleWindow().Layout(
+		giu.Label("Clipboard History"),
+		rows,
+	)
 }
 
 func (c *Client) listener() {
@@ -58,6 +57,6 @@ func main() {
 	client := Client{&conn, []Clip{}}
 	go client.listener()
 
-        wnd := giu.NewMasterWindow("Clipboard History", 800, 800, giu.MasterWindowFlagsNotResizable)
+	wnd := giu.NewMasterWindow("Clipboard History", 500, 500, 0)
 	wnd.Run(client.loop)
 }

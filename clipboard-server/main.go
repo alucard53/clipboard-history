@@ -1,12 +1,13 @@
 package main
 
 import (
-	"fmt"
-	"os/exec"
-	"time"
-	"net"
-	"encoding/json"
 	"clipboard-server/idGen"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os/exec"
+	"sync"
+	"time"
 )
 
 type CopyPayload struct {
@@ -21,36 +22,43 @@ type Clip struct {
 type Server struct {
 	id           int
 	clips        map[int]string
+	conn		 *net.Conn
 	idGenerator  idGen.IdGenerator
 	channel      chan bool
+	mutex	     *sync.RWMutex
 }
 
 func getCurrentClipboardContent() (string, error) {
-	cmd := exec.Command("wl-paste")
+	// TODO: get command based on OS/rendered
+	cmd := exec.Command("pbpaste")
 
 	if bytes, err := cmd.Output();  err != nil {
 		fmt.Println("Failed to run wl-paste", err)
 		return "", err
 	} else {
-		return string(bytes[:len(bytes) - 1]), nil
+		return string(bytes), nil
 	}
 }
 
 func (s *Server) copy(
 	newId int,
 ) {
-	cmd := exec.Command("wl-copy")
+	// TODO: get command based on OS/rendered
+	cmd := exec.Command("pbcopy")
 	stdin, err := cmd.StdinPipe()
-	
+
 	if err != nil {
 		fmt.Println("Failed to get wl-copy stdin pipe", err)
 		return
 	}
-	
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	s.id = newId
 	stdin.Write([]byte(s.clips[newId]))
 	stdin.Close()
-	
+
 	if err = cmd.Run(); err != nil {
 		fmt.Println("failed to run wl-copy", err)
 		return
@@ -67,12 +75,22 @@ func(s *Server) clipboardListener() {
 			continue
 		}
 
-		if content != s.clips[s.id] {
-			nextId := s.idGenerator.Next()
-			s.clips[nextId] = content
-			s.id = nextId
-			s.channel <- true
+		s.mutex.RLock()
+		if content == s.clips[s.id] {
+			s.mutex.RUnlock()
+			continue
 		}
+		s.mutex.RUnlock()
+
+		s.mutex.Lock()
+		nextId := s.idGenerator.Next()
+		s.clips[nextId] = content
+		s.id = nextId
+
+		if s.conn != nil {
+			s.send(s.conn)
+		}
+		s.mutex.Unlock()
 	}
 }
 
@@ -84,8 +102,10 @@ func initialize() Server {
 	server := Server{
 		id,
 		clips,
+		nil,
 		idGenerator,
 		make(chan bool),
+		&sync.RWMutex{},
 	}
 	content, err := getCurrentClipboardContent()
 
@@ -100,14 +120,15 @@ func initialize() Server {
 }
 
 func(s *Server) clientListener(
-	conn *net.Conn,
 ) {
 	for {
 		payload := CopyPayload{}
-		err := json.NewDecoder(*conn).Decode(&payload)
+		err := json.NewDecoder(*s.conn).Decode(&payload)
 		if err != nil {
 			fmt.Println("Error in decoding client msg", err)
-			s.channel <- false
+			if s.conn != nil {
+				(*s.conn).Close()
+			}
 			return
 		}
 		s.copy(payload.Id)
@@ -115,27 +136,20 @@ func(s *Server) clientListener(
 }
 
 
-func(s *Server) clientSender(conn *net.Conn) {
-	for {
-		stop := !<-s.channel
-		if stop {
-			fmt.Println("cleaning up")
-			return
-		}
-		data := []Clip{}
+func(s *Server) send(conn *net.Conn) {
+	data := []Clip{}
 
-		for Id, Content := range s.clips {
-			data = append(
-				data, 
-				Clip{
-					Id,
-					Content,
-				},
-			)
-		}
-
-		json.NewEncoder(*conn).Encode(data)
+	for Id, Content := range s.clips {
+		data = append(
+			data,
+			Clip{
+				Id,
+				Content,
+			},
+		)
 	}
+
+	json.NewEncoder(*conn).Encode(data)
 }
 
 func main() {
@@ -157,11 +171,13 @@ func main() {
 			fmt.Println("Failed to handle listener")
 		}
 
+		server.conn = &conn
+
 		data := []Clip{}
 
 		for Id, Content := range server.clips {
 			data = append(
-				data, 
+				data,
 				Clip{
 					Id,
 					Content,
@@ -171,7 +187,6 @@ func main() {
 
 		json.NewEncoder(conn).Encode(data)
 
-		go server.clientListener(&conn)
-		go server.clientSender(&conn)
+		go server.clientListener()
 	}
 }
