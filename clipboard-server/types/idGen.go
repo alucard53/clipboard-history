@@ -1,10 +1,10 @@
-package idGen
+package types
 
 type IdGenerator struct {
 	id int
 }
 
-func New() IdGenerator {
+func NewIdGenerator() IdGenerator {
 	return IdGenerator {
 		id: 0,
 	}

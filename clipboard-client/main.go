@@ -17,8 +17,9 @@ type Client struct {
 	clips []Clip
 }
 
-type CopyPayload struct {
-	Id int
+type Payload struct {
+	Id   int
+	Type string
 }
 
 func(c *Client) loop() {
@@ -27,13 +28,30 @@ func(c *Client) loop() {
 	for _, clip := range c.clips {
 		rows = append(rows, giu.Row(
 			giu.Button(clip.Content).OnClick(func() {
-				json.NewEncoder(*c.conn).Encode(CopyPayload{clip.Id})
+				json.NewEncoder(*c.conn).Encode(Payload{
+					clip.Id,
+					"copy",
+				})
+			}),
+			giu.Button("clear").OnClick(func() {
+				json.NewEncoder(*c.conn).Encode(Payload{
+					clip.Id,
+					"clear",
+				})
 			}),
 		))
 	}
 
 	giu.SingleWindow().Layout(
-		giu.Label("Clipboard History"),
+		giu.Row(
+			giu.Label("Clipboard History"),
+			giu.Button("Clear all").OnClick(func() {
+				c.clips = []Clip{}
+				json.NewEncoder(*c.conn).Encode(Payload{
+					Type: "clearAll",
+				})
+			}),
+		),
 		rows,
 	)
 }

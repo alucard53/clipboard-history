@@ -1,74 +1,52 @@
 package main
 
 import (
-	"clipboard-server/idGen"
+	"clipboard-server/types"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net"
-	"os/exec"
+	"slices"
 	"sync"
 	"time"
 )
 
-type CopyPayload struct {
-	Id int
-}
-
-type Clip struct {
-	Id int
-	Content string
+type Payload struct {
+	Id   int
+	Type string
 }
 
 type Server struct {
-	id           int
-	clips        map[int]string
-	conn		 *net.Conn
-	idGenerator  idGen.IdGenerator
-	channel      chan bool
-	mutex	     *sync.RWMutex
+	conn      *net.Conn
+	mutex     *sync.RWMutex
+	clipboard *types.Clipboard
 }
 
-func getCurrentClipboardContent() (string, error) {
-	// TODO: get command based on OS/rendered
-	cmd := exec.Command("pbpaste")
+func (s *Server) clearAll() {
+	s.mutex.Lock()
+	s.clipboard.ClearAll()
+	s.mutex.Unlock()
+	s.send(s.conn)
+}
 
-	if bytes, err := cmd.Output();  err != nil {
-		fmt.Println("Failed to run wl-paste", err)
-		return "", err
-	} else {
-		return string(bytes), nil
-	}
+func (s *Server) clear(id int) {
+	s.clipboard.Clear(id, s.mutex)
+
+	s.send(s.conn)
 }
 
 func (s *Server) copy(
 	newId int,
 ) {
-	// TODO: get command based on OS/rendered
-	cmd := exec.Command("pbcopy")
-	stdin, err := cmd.StdinPipe()
-
-	if err != nil {
-		fmt.Println("Failed to get wl-copy stdin pipe", err)
-		return
-	}
-
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	s.id = newId
-	stdin.Write([]byte(s.clips[newId]))
-	stdin.Close()
-
-	if err = cmd.Run(); err != nil {
-		fmt.Println("failed to run wl-copy", err)
-		return
-	}
+	s.clipboard.Copy(newId)
+	s.mutex.Unlock()
 }
 
-func(s *Server) clipboardListener() {
+func (s *Server) clipboardListener() {
 	for {
 		time.Sleep(1 * time.Second)
-		content, err := getCurrentClipboardContent()
+		content, err := types.GetLatestClipboardContent()
 
 		if err != nil {
 			fmt.Println("Failed to read clipboard content", err)
@@ -76,16 +54,14 @@ func(s *Server) clipboardListener() {
 		}
 
 		s.mutex.RLock()
-		if content == s.clips[s.id] {
+		if content == s.clipboard.GetClipboard() {
 			s.mutex.RUnlock()
 			continue
 		}
 		s.mutex.RUnlock()
 
 		s.mutex.Lock()
-		nextId := s.idGenerator.Next()
-		s.clips[nextId] = content
-		s.id = nextId
+		s.clipboard.SetNew(content)
 
 		if s.conn != nil {
 			s.send(s.conn)
@@ -95,34 +71,28 @@ func(s *Server) clipboardListener() {
 }
 
 func initialize() Server {
-	idGenerator := idGen.New()
-	id := idGenerator.Next()
-	clips := make(map[int]string)
-
 	server := Server{
-		id,
-		clips,
-		nil,
-		idGenerator,
-		make(chan bool),
-		&sync.RWMutex{},
+		conn:      nil,
+		clipboard: types.NewClipboard(),
+		mutex:     &sync.RWMutex{},
 	}
-	content, err := getCurrentClipboardContent()
+	content, err := types.GetLatestClipboardContent()
 
 	if err != nil {
 		fmt.Println("Failed to read initial clipboard content", err)
 		return server
 	}
 
-	server.clips[id] = content
+	if content != "" {
+		server.clipboard.SetNew(content)
+	}
 
 	return server
 }
 
-func(s *Server) clientListener(
-) {
+func (s *Server) clientListener() {
 	for {
-		payload := CopyPayload{}
+		payload := Payload{}
 		err := json.NewDecoder(*s.conn).Decode(&payload)
 		if err != nil {
 			fmt.Println("Error in decoding client msg", err)
@@ -131,23 +101,37 @@ func(s *Server) clientListener(
 			}
 			return
 		}
-		s.copy(payload.Id)
+
+		switch payload.Type {
+		case "copy":
+			s.copy(payload.Id)
+		case "clear":
+			s.clear(payload.Id)
+		case "clearAll":
+			s.clearAll()
+		default:
+			fmt.Println("invalid instruction type from client")
+		}
 	}
 }
 
+func (s *Server) send(conn *net.Conn) {
+	data := []types.Clip{}
 
-func(s *Server) send(conn *net.Conn) {
-	data := []Clip{}
-
-	for Id, Content := range s.clips {
+	for Id, Content := range s.clipboard.Clips {
 		data = append(
 			data,
-			Clip{
-				Id,
-				Content,
+			types.Clip{
+				Id:      Id,
+				Content: Content,
 			},
 		)
 	}
+
+	slices.SortFunc(
+		data,
+		func(a types.Clip, b types.Clip) int { return cmp.Compare(b.Id, a.Id) },
+	)
 
 	json.NewEncoder(*conn).Encode(data)
 }
@@ -165,7 +149,7 @@ func main() {
 		fmt.Println("Listening at port 6969")
 	}
 
-	for  {
+	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Failed to handle listener")
@@ -173,17 +157,22 @@ func main() {
 
 		server.conn = &conn
 
-		data := []Clip{}
+		data := []types.Clip{}
 
-		for Id, Content := range server.clips {
+		for Id, Content := range server.clipboard.Clips {
 			data = append(
 				data,
-				Clip{
-					Id,
-					Content,
+				types.Clip{
+					Id:      Id,
+					Content: Content,
 				},
 			)
 		}
+
+		slices.SortFunc(
+			data,
+			func(a types.Clip, b types.Clip) int { return cmp.Compare(b.Id, a.Id) },
+		)
 
 		json.NewEncoder(conn).Encode(data)
 
