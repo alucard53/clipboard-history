@@ -4,7 +4,45 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"runtime"
 )
+
+type Command interface {
+	copy () string
+	paste () string
+	process (content []byte) string
+}
+
+type MacOSCopy struct {
+}
+
+func (c MacOSCopy) copy() string {
+	return "pbcopy"
+}
+func (c MacOSCopy) paste() string {
+	return "pbpaste"
+}
+
+func (c MacOSCopy) process(content []byte) string {
+	return string(content)
+}
+
+type WLCopy struct {
+}
+
+func (c WLCopy) copy() string {
+	return "wl-copy"
+}
+
+func (c WLCopy) paste() string {
+	return "wl-paste"
+}
+
+func (c WLCopy) process(content []byte) string {
+	return string(content[:len(content) - 1])
+}
+
+// TODO: X11Copy
 
 type Clip struct {
 	Id      int
@@ -15,17 +53,17 @@ type Clipboard struct {
 	id          int
 	Clips       map[int]string
 	idGenerator IdGenerator
+	command	    Command
 }
 
-func GetLatestClipboardContent() (string, error) {
-	// TODO: get command based on OS/rendered
-	cmd := exec.Command("pbpaste")
+func (c *Clipboard) GetLatestClipboardContent() (string, error) {
+	cmd := exec.Command(c.command.paste())
 
 	if bytes, err := cmd.Output(); err != nil {
 		fmt.Println("Failed to run wl-paste", err)
-		return "", err
+		return "", nil
 	} else {
-		return string(bytes), nil
+		return c.command.process(bytes), nil
 	}
 }
 
@@ -35,7 +73,7 @@ func (c *Clipboard) GetClipboard() string {
 
 func (c *Clipboard) SetClipboard(content string) {
 	// TODO: get command based on OS/rendered
-	cmd := exec.Command("pbcopy")
+	cmd := exec.Command(c.command.copy())
 	stdin, err := cmd.StdinPipe()
 
 	if err != nil {
@@ -69,7 +107,7 @@ func (c *Clipboard) Copy(newId int) {
 	c.SetClipboard(c.Clips[newId])
 }
 
-func (c *Clipboard) Clear(id int, mutex *sync.RWMutex) {
+func (c *Clipboard) Clear(id int, mutex *sync.Mutex) {
 	delete(c.Clips, id)
 
 	if c.id == id {
@@ -82,9 +120,22 @@ func (c *Clipboard) Clear(id int, mutex *sync.RWMutex) {
 
 func NewClipboard() *Clipboard {
 	idGenerator := NewIdGenerator()
+
+	var command Command
+
+	osType := runtime.GOOS
+
+	if osType == "linux" {
+		command = WLCopy{}
+	} else if osType == "darwin" {
+		command = MacOSCopy{}
+	}
+
+
 	return &Clipboard{
 		id:          idGenerator.Next(),
 		Clips:       make(map[int]string),
 		idGenerator: idGenerator,
+		command: command,
 	}
 }

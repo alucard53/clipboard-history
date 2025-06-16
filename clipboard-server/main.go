@@ -18,7 +18,7 @@ type Payload struct {
 
 type Server struct {
 	conn      *net.Conn
-	mutex     *sync.RWMutex
+	mutex     *sync.Mutex
 	clipboard *types.Clipboard
 }
 
@@ -46,19 +46,19 @@ func (s *Server) copy(
 func (s *Server) clipboardListener() {
 	for {
 		time.Sleep(1 * time.Second)
-		content, err := types.GetLatestClipboardContent()
+		content, err := s.clipboard.GetLatestClipboardContent()
 
 		if err != nil {
 			fmt.Println("Failed to read clipboard content", err)
 			continue
 		}
 
-		s.mutex.RLock()
+		s.mutex.Lock()
 		if content == s.clipboard.GetClipboard() {
-			s.mutex.RUnlock()
+			s.mutex.Unlock()
 			continue
 		}
-		s.mutex.RUnlock()
+		s.mutex.Unlock()
 
 		s.mutex.Lock()
 		s.clipboard.SetNew(content)
@@ -74,9 +74,9 @@ func initialize() Server {
 	server := Server{
 		conn:      nil,
 		clipboard: types.NewClipboard(),
-		mutex:     &sync.RWMutex{},
+		mutex:     &sync.Mutex{},
 	}
-	content, err := types.GetLatestClipboardContent()
+	content, err := server.clipboard.GetLatestClipboardContent()
 
 	if err != nil {
 		fmt.Println("Failed to read initial clipboard content", err)
